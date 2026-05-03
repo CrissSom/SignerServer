@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -11,15 +12,20 @@ logger = logging.getLogger(__name__)
 
 
 async def get_tool_version() -> str | None:
-    """Return AzureSignTool version string, or None if not found."""
+    """Return jsign version string, or None if java/jar not found."""
+    if not os.path.exists(settings.jsign_path):
+        return None
     try:
         proc = await asyncio.create_subprocess_exec(
-            settings.azure_sign_tool_path, "--version",
+            "java", "-jar", settings.jsign_path, "--help",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
-        return stdout.decode().strip() if proc.returncode == 0 else None
+        stdout, stderr = await proc.communicate()
+        output = stdout.decode() + stderr.decode()
+        # First line is typically "Jsign x.x (https://...)"
+        first_line = output.splitlines()[0] if output.splitlines() else ""
+        return first_line.strip() or "jsign (available)"
     except FileNotFoundError:
         return None
 
@@ -34,10 +40,10 @@ async def sign_binary(
     append_signature: bool = False,
 ) -> str:
     """
-    Sign a PE binary using AzureSignTool backed by Azure Key Vault.
+    Sign a PE binary using jsign backed by Azure Key Vault.
 
     Copies the input file to a temp output path, signs it in-place, and
-    returns the path to the signed file.  Caller is responsible for cleanup.
+    returns the path to the signed file. Caller is responsible for cleanup.
     """
     suffix = Path(input_path).suffix or ".exe"
     tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -53,7 +59,6 @@ async def sign_binary(
         description_url=description_url,
         timestamp_url=timestamp_url,
         timestamp_digest=timestamp_digest,
-        append_signature=append_signature,
     )
 
     logger.info("Running: %s", " ".join(_redact(cmd)))
@@ -68,13 +73,31 @@ async def sign_binary(
     if proc.returncode != 0:
         os.unlink(output_path)
         raise RuntimeError(
-            f"AzureSignTool exited {proc.returncode}:\n"
+            f"jsign exited {proc.returncode}:\n"
             f"stdout: {stdout.decode()}\n"
             f"stderr: {stderr.decode()}"
         )
 
     logger.info("Signing succeeded: %s", stdout.decode().strip())
     return output_path
+
+
+def _build_storepass() -> str | None:
+    """
+    Build the jsign storepass string for Azure Key Vault.
+
+    Format: tenantId|clientId|clientSecret
+    Returns None to use DefaultAzureCredential (managed identity / env vars).
+    """
+    if settings.tenant_id or settings.client_id or settings.client_secret:
+        return f"{settings.tenant_id or ''}|{settings.client_id or ''}|{settings.client_secret or ''}"
+    return None
+
+
+def _normalise_digest(digest: str | None) -> str:
+    """Convert sha256/sha384/sha512 → SHA-256/SHA-384/SHA-512 for jsign."""
+    d = (digest or settings.default_digest).upper().replace("SHA", "SHA-").replace("SHA--", "SHA-")
+    return d if d in ("SHA-256", "SHA-384", "SHA-512") else "SHA-256"
 
 
 def _build_command(
@@ -84,49 +107,39 @@ def _build_command(
     description_url: str | None,
     timestamp_url: str | None,
     timestamp_digest: str | None,
-    append_signature: bool,
 ) -> list[str]:
     cmd: list[str] = [
-        settings.azure_sign_tool_path, "sign",
-        "--azure-key-vault-url", settings.key_vault_url,
-        "--azure-key-vault-certificate", certificate_name,
+        "java", "-jar", settings.jsign_path,
+        "--storetype", "AZURE",
+        "--keystore", settings.key_vault_url,
+        "--alias", certificate_name,
+        "--alg", _normalise_digest(timestamp_digest),
     ]
 
-    # Auth: prefer explicit client credentials, else AzureSignTool will try
-    # managed identity / environment / Azure CLI automatically.
-    if settings.tenant_id:
-        cmd += ["--azure-key-vault-tenant-id", settings.tenant_id]
-    if settings.client_id:
-        cmd += ["--azure-key-vault-client-id", settings.client_id]
-    if settings.client_secret:
-        cmd += ["--azure-key-vault-client-secret", settings.client_secret]
+    storepass = _build_storepass()
+    if storepass:
+        cmd += ["--storepass", storepass]
 
-    # Managed identity flag — only added when no client secret is configured
-    if not settings.client_secret:
-        cmd += ["--azure-key-vault-managed-identity"]
-
-    # Timestamp
     ts_url = timestamp_url or settings.default_timestamp_url
-    ts_digest = timestamp_digest or settings.default_timestamp_digest
     if ts_url:
-        cmd += ["--timestamp-rfc3161", ts_url, "--timestamp-digest", ts_digest]
+        cmd += ["--tsaurl", ts_url, "--tsmode", "RFC3161"]
 
     if description:
-        cmd += ["--description", description]
+        cmd += ["--name", description]
     if description_url:
-        cmd += ["--description-url", description_url]
-    if append_signature:
-        cmd.append("--append-signature")
+        cmd += ["--url", description_url]
 
     cmd.append(output_path)
     return cmd
 
 
 def _redact(cmd: list[str]) -> list[str]:
-    """Replace secret values in logged command with ***."""
+    """Replace the client secret inside --storepass with ***."""
     redacted = list(cmd)
-    secret_flags = {"--azure-key-vault-client-secret"}
     for i, token in enumerate(redacted):
-        if token in secret_flags and i + 1 < len(redacted):
-            redacted[i + 1] = "***"
+        if token == "--storepass" and i + 1 < len(redacted):
+            parts = redacted[i + 1].split("|")
+            if len(parts) == 3:
+                parts[2] = "***"
+            redacted[i + 1] = "|".join(parts)
     return redacted

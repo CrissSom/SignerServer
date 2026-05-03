@@ -38,11 +38,11 @@ async def lifespan(app: FastAPI):
     global _tool_version
     _tool_version = await get_tool_version()
     if _tool_version:
-        logger.info("AzureSignTool version: %s", _tool_version)
+        logger.info("jsign: %s", _tool_version)
     else:
         logger.warning(
-            "AzureSignTool not found on PATH — signing requests will fail. "
-            "Install via: dotnet tool install --global AzureSignTool"
+            "jsign not found at %s or Java not available — signing requests will fail.",
+            settings.jsign_path,
         )
     yield
 
