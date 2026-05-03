@@ -110,7 +110,7 @@ def _build_command(
 ) -> list[str]:
     cmd: list[str] = [
         "java", "-jar", settings.jsign_path,
-        "--storetype", "AZURE",
+        "--storetype", "AZUREKEYVAULT",
         "--keystore", settings.key_vault_url,
         "--alias", certificate_name,
         "--alg", _normalise_digest(timestamp_digest),
