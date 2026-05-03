@@ -562,7 +562,15 @@ if (-not $response.IsSuccessStatusCode) {
 }
 
 $bytes  = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
-$outPath = Join-Path (Get-Location) $OutputFile
+
+# If $OutputFile is relative, place it next to the input file.
+# Avoids write failures when the working directory is a system path (e.g. C:\Windows\system32).
+if ([System.IO.Path]::IsPathRooted($OutputFile)) {
+    $outPath = $OutputFile
+} else {
+    $inputDir = [System.IO.Path]::GetDirectoryName($fullInputPath)
+    $outPath  = [System.IO.Path]::Combine($inputDir, $OutputFile)
+}
 [System.IO.File]::WriteAllBytes($outPath, $bytes)
 
 Write-Host "Signed file saved to $outPath"
