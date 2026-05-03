@@ -10,7 +10,7 @@ RUN dotnet tool install --global AzureSignTool
 # Patch it to reference /usr/local/dotnet-tools instead so it works from any
 # user when the store is copied to that world-accessible location.
 RUN sed -i 's|/root/.dotnet/tools/|/usr/local/dotnet-tools/|g' \
-        /root/.dotnet/tools/AzureSignTool
+        /root/.dotnet/tools/azuresigntool
 
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim

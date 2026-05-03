@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     default_timestamp_url: str = "http://timestamp.digicert.com"
     default_timestamp_digest: str = "sha256"
 
-    # Path to AzureSignTool binary (defaults to 'AzureSignTool' on PATH)
-    azure_sign_tool_path: str = "AzureSignTool"
+    # Path to AzureSignTool binary — Linux shim is lowercase 'azuresigntool'
+    azure_sign_tool_path: str = "azuresigntool"
 
     # Maximum upload size in bytes (default 200 MB)
     max_upload_bytes: int = 200 * 1024 * 1024
