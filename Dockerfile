@@ -10,6 +10,7 @@ RUN apt-get update \
         default-jre-headless \
         wget \
         ca-certificates \
+        osslsigncode \
     && wget -q "https://github.com/ebourg/jsign/releases/download/${JSIGN_VERSION}/jsign-${JSIGN_VERSION}.jar" \
            -O /opt/jsign.jar \
     && rm -rf /var/lib/apt/lists/*

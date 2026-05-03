@@ -83,6 +83,8 @@ async def sign_binary(
 
     shutil.copy2(input_path, output_path)
 
+    await _strip_existing_signature(output_path)
+
     token = await _get_token_async()
 
     cmd = _build_command(
@@ -114,6 +116,32 @@ async def sign_binary(
 
     logger.info("Signing succeeded: %s", stdout.decode().strip())
     return output_path
+
+
+async def _strip_existing_signature(path: str) -> None:
+    """
+    Remove any existing Authenticode signature from a PE file using osslsigncode.
+    Silently skips unsigned files or if osslsigncode is unavailable.
+    """
+    stripped = path + ".stripped"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "osslsigncode", "remove-signature", "-in", path, "-out", stripped,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode == 0 and os.path.exists(stripped):
+            os.replace(stripped, path)
+            logger.info("Stripped existing signature from %s", path)
+        else:
+            # File was unsigned — osslsigncode exits non-zero; that's fine
+            logger.debug("No existing signature to strip: %s", stderr.decode().strip())
+    except FileNotFoundError:
+        logger.warning("osslsigncode not found — existing signatures will not be stripped")
+    finally:
+        if os.path.exists(stripped):
+            os.unlink(stripped)
 
 
 def _normalise_digest(digest: str | None) -> str:
