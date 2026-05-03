@@ -514,17 +514,28 @@ param(
     [string]$OutputFile  = "MyApp-signed.exe",
     [string]$Server      = "https://signer.example.com",
     [string]$ApiKey      = "your-api-key",
-    [string]$Description = "My Application"
+    [string]$Description = "My Application",
+    # Set to $true when the server uses a self-signed certificate
+    [switch]$SkipCertificateCheck
 )
 
 Add-Type -AssemblyName System.Net.Http
 
-$client = [System.Net.Http.HttpClient]::new()
+# ── SSL handler ──────────────────────────────────────────────────────────────
+$handler = [System.Net.Http.HttpClientHandler]::new()
+if ($SkipCertificateCheck) {
+    Write-Warning "Certificate validation is disabled — use only for testing."
+    $handler.ServerCertificateCustomValidationCallback =
+        [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+}
+
+$client = [System.Net.Http.HttpClient]::new($handler)
 $client.DefaultRequestHeaders.Add("X-API-Key", $ApiKey)
+$client.Timeout = [TimeSpan]::FromSeconds(120)
 
-$fullInputPath = Resolve-Path $InputFile
+$fullInputPath = (Resolve-Path $InputFile).Path
 
-$multipart = [System.Net.Http.MultipartFormDataContent]::new()
+$multipart   = [System.Net.Http.MultipartFormDataContent]::new()
 $fileBytes   = [System.IO.File]::ReadAllBytes($fullInputPath)
 $fileContent = [System.Net.Http.ByteArrayContent]::new($fileBytes)
 $fileContent.Headers.ContentType =
@@ -535,19 +546,37 @@ $encodedDesc = [Uri]::EscapeDataString($Description)
 $uri = "$Server/sign?description=$encodedDesc"
 
 Write-Host "Signing $fullInputPath ..."
-$response = $client.PostAsync($uri, $multipart).GetAwaiter().GetResult()
+
+try {
+    $response = $client.PostAsync($uri, $multipart).GetAwaiter().GetResult()
+} catch {
+    # Unwrap nested exceptions to show the real cause
+    $ex = $_.Exception
+    while ($ex.InnerException) { $ex = $ex.InnerException }
+    throw "Request failed: $($ex.Message)"
+}
 
 if (-not $response.IsSuccessStatusCode) {
     $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    throw "Signing failed ($($response.StatusCode)): $body"
+    throw "Signing failed ($([int]$response.StatusCode) $($response.StatusCode)): $body"
 }
 
-$bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+$bytes  = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
 $outPath = Join-Path (Get-Location) $OutputFile
 [System.IO.File]::WriteAllBytes($outPath, $bytes)
 
 Write-Host "Signed file saved to $outPath"
 ```
+
+**Common errors and fixes:**
+
+| Error message | Cause | Fix |
+|---|---|---|
+| `Connection refused` / `No connection could be made` | Server not running or wrong port | Check the server is up: `curl http://<host>:8080/health` |
+| `Could not establish trust relationship` / `SSL` | Self-signed or untrusted TLS cert | Add `-SkipCertificateCheck` for testing, or install a real cert |
+| `The remote name could not be resolved` | DNS failure | Use the IP address instead of hostname |
+| `401 Unauthorized` | Wrong API key | Check `$ApiKey` matches `API_KEY` in server `.env` |
+| `500 Internal Server Error` | AzureSignTool / Key Vault error | Check server logs: `docker compose logs -f` |
 
 ### GitHub Actions
 
