@@ -1,14 +1,45 @@
 import asyncio
 import logging
 import os
-import re
 import shutil
 import tempfile
 from pathlib import Path
 
+from azure.identity import ClientSecretCredential, DefaultAzureCredential
+
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+_KEYVAULT_SCOPE = "https://vault.azure.net/.default"
+
+# Module-level credential — azure-identity caches and auto-refreshes tokens
+_credential = None
+
+
+def _get_credential():
+    global _credential
+    if _credential is None:
+        if settings.tenant_id and settings.client_id and settings.client_secret:
+            _credential = ClientSecretCredential(
+                tenant_id=settings.tenant_id,
+                client_id=settings.client_id,
+                client_secret=settings.client_secret,
+            )
+        else:
+            _credential = DefaultAzureCredential()
+    return _credential
+
+
+def _fetch_token() -> str:
+    """Fetch a bearer token for Azure Key Vault (blocking, run in executor)."""
+    token = _get_credential().get_token(_KEYVAULT_SCOPE)
+    return token.token
+
+
+async def _get_token_async() -> str:
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _fetch_token)
 
 
 async def get_tool_version() -> str | None:
@@ -23,7 +54,6 @@ async def get_tool_version() -> str | None:
         )
         stdout, stderr = await proc.communicate()
         output = stdout.decode() + stderr.decode()
-        # First line is typically "Jsign x.x (https://...)"
         first_line = output.splitlines()[0] if output.splitlines() else ""
         return first_line.strip() or "jsign (available)"
     except FileNotFoundError:
@@ -42,8 +72,9 @@ async def sign_binary(
     """
     Sign a PE binary using jsign backed by Azure Key Vault.
 
-    Copies the input file to a temp output path, signs it in-place, and
-    returns the path to the signed file. Caller is responsible for cleanup.
+    Fetches a short-lived bearer token from Azure AD, passes it to jsign,
+    copies input to a temp file, signs in-place, returns the signed path.
+    Caller is responsible for cleanup.
     """
     suffix = Path(input_path).suffix or ".exe"
     tmp_out = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -52,9 +83,12 @@ async def sign_binary(
 
     shutil.copy2(input_path, output_path)
 
+    token = await _get_token_async()
+
     cmd = _build_command(
         output_path=output_path,
         certificate_name=certificate_name,
+        token=token,
         description=description,
         description_url=description_url,
         timestamp_url=timestamp_url,
@@ -82,20 +116,7 @@ async def sign_binary(
     return output_path
 
 
-def _build_storepass() -> str | None:
-    """
-    Build the jsign storepass string for Azure Key Vault.
-
-    Format: tenantId|clientId|clientSecret
-    Returns None to use DefaultAzureCredential (managed identity / env vars).
-    """
-    if settings.tenant_id or settings.client_id or settings.client_secret:
-        return f"{settings.tenant_id or ''}|{settings.client_id or ''}|{settings.client_secret or ''}"
-    return None
-
-
 def _normalise_digest(digest: str | None) -> str:
-    """Convert sha256/sha384/sha512 → SHA-256/SHA-384/SHA-512 for jsign."""
     d = (digest or settings.default_digest).upper().replace("SHA", "SHA-").replace("SHA--", "SHA-")
     return d if d in ("SHA-256", "SHA-384", "SHA-512") else "SHA-256"
 
@@ -103,6 +124,7 @@ def _normalise_digest(digest: str | None) -> str:
 def _build_command(
     output_path: str,
     certificate_name: str,
+    token: str,
     description: str | None,
     description_url: str | None,
     timestamp_url: str | None,
@@ -113,12 +135,9 @@ def _build_command(
         "--storetype", "AZUREKEYVAULT",
         "--keystore", settings.key_vault_url,
         "--alias", certificate_name,
+        "--storepass", token,
         "--alg", _normalise_digest(timestamp_digest),
     ]
-
-    storepass = _build_storepass()
-    if storepass:
-        cmd += ["--storepass", storepass]
 
     ts_url = timestamp_url or settings.default_timestamp_url
     if ts_url:
@@ -134,12 +153,9 @@ def _build_command(
 
 
 def _redact(cmd: list[str]) -> list[str]:
-    """Replace the client secret inside --storepass with ***."""
+    """Replace the bearer token after --storepass with ***."""
     redacted = list(cmd)
     for i, token in enumerate(redacted):
         if token == "--storepass" and i + 1 < len(redacted):
-            parts = redacted[i + 1].split("|")
-            if len(parts) == 3:
-                parts[2] = "***"
-            redacted[i + 1] = "|".join(parts)
+            redacted[i + 1] = "***"
     return redacted
