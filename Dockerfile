@@ -1,11 +1,10 @@
-# ── Stage 1: install AzureSignTool as the signer user ────────────────────────
+# ── Stage 1: install AzureSignTool to an explicit path ───────────────────────
 FROM mcr.microsoft.com/dotnet/sdk:8.0-bookworm-slim AS tool-builder
 
-# Create the same non-root user so the tool installs into /home/signer/.dotnet/tools.
-# The shim script records the install path, so the final image must use the same path.
-RUN useradd -m -u 1000 signer
-USER signer
-RUN dotnet tool install --global AzureSignTool
+# Install to /opt/dotnet-tools so the shim's hardcoded .store reference points
+# to /opt/dotnet-tools/.store/... — a path we can copy verbatim to the final
+# image without any home-directory or user ownership complications.
+RUN dotnet tool install AzureSignTool --tool-path /opt/dotnet-tools
 
 # ── Stage 2: runtime image ────────────────────────────────────────────────────
 FROM mcr.microsoft.com/dotnet/runtime:8.0-bookworm-slim
@@ -20,15 +19,11 @@ RUN apt-get update \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Recreate signer user with the same UID as the builder stage
-RUN useradd -m -u 1000 signer
+# Copy tool to the SAME path — shim contains hardcoded /opt/dotnet-tools/.store/...
+COPY --from=tool-builder /opt/dotnet-tools /opt/dotnet-tools
+RUN chmod -R a+rX /opt/dotnet-tools
 
-# Copy tool store to the same path it was installed at so the shim's hardcoded
-# /home/signer/.dotnet/tools/.store/... reference resolves correctly
-COPY --from=tool-builder --chown=signer:signer \
-    /home/signer/.dotnet/tools /home/signer/.dotnet/tools
-
-ENV PATH="/home/signer/.dotnet/tools:${PATH}"
+ENV PATH="/opt/dotnet-tools:${PATH}"
 
 WORKDIR /app
 
@@ -39,7 +34,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app/ ./app/
-RUN chown -R signer:signer /app
+
+RUN useradd -m -u 1000 signer \
+    && chown -R signer:signer /app
 
 EXPOSE 8080
 
