@@ -506,21 +506,47 @@ sign_binary("Setup.msi", "Setup-signed.msi", description="My Installer")
 
 ### PowerShell (from Windows build agent)
 
+Works on **Windows PowerShell 5.1 and PowerShell 7+**.
+
 ```powershell
-$server  = "https://signer.example.com"
-$apiKey  = "your-api-key"
-$input   = "MyApp.exe"
-$output  = "MyApp-signed.exe"
+param(
+    [string]$InputFile   = "MyApp.exe",
+    [string]$OutputFile  = "MyApp-signed.exe",
+    [string]$Server      = "https://signer.example.com",
+    [string]$ApiKey      = "your-api-key",
+    [string]$Description = "My Application"
+)
 
-$form = @{ file = Get-Item $input }
-Invoke-RestMethod `
-    -Uri "$server/sign?description=My+Application" `
-    -Method Post `
-    -Headers @{ "X-API-Key" = $apiKey } `
-    -Form $form `
-    -OutFile $output
+Add-Type -AssemblyName System.Net.Http
 
-Write-Host "Signed file saved to $output"
+$client = [System.Net.Http.HttpClient]::new()
+$client.DefaultRequestHeaders.Add("X-API-Key", $ApiKey)
+
+$fullInputPath = Resolve-Path $InputFile
+
+$multipart = [System.Net.Http.MultipartFormDataContent]::new()
+$fileBytes   = [System.IO.File]::ReadAllBytes($fullInputPath)
+$fileContent = [System.Net.Http.ByteArrayContent]::new($fileBytes)
+$fileContent.Headers.ContentType =
+    [System.Net.Http.Headers.MediaTypeHeaderValue]::new("application/octet-stream")
+$multipart.Add($fileContent, "file", [System.IO.Path]::GetFileName($fullInputPath))
+
+$encodedDesc = [Uri]::EscapeDataString($Description)
+$uri = "$Server/sign?description=$encodedDesc"
+
+Write-Host "Signing $fullInputPath ..."
+$response = $client.PostAsync($uri, $multipart).GetAwaiter().GetResult()
+
+if (-not $response.IsSuccessStatusCode) {
+    $body = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    throw "Signing failed ($($response.StatusCode)): $body"
+}
+
+$bytes = $response.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+$outPath = Join-Path (Get-Location) $OutputFile
+[System.IO.File]::WriteAllBytes($outPath, $bytes)
+
+Write-Host "Signed file saved to $outPath"
 ```
 
 ### GitHub Actions
