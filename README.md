@@ -9,15 +9,16 @@ A Linux-based HTTP server that signs Windows PE binaries (EXE, DLL, MSI, CAB, AP
 1. [How it works](#how-it-works)
 2. [Prerequisites](#prerequisites)
 3. [Azure setup](#azure-setup)
-4. [Deployment — Docker with systemd (recommended)](#deployment--docker-with-systemd-recommended)
-5. [Deployment — bare metal](#deployment--bare-metal)
-6. [Configuration reference](#configuration-reference)
-7. [Putting it behind TLS with nginx](#putting-it-behind-tls-with-nginx)
-8. [API reference](#api-reference)
-9. [Client usage examples](#client-usage-examples)
-10. [Verifying a signature](#verifying-a-signature)
-11. [Troubleshooting](#troubleshooting)
-12. [Security notes](#security-notes)
+4. [Deployment — Portainer stack](#deployment--portainer-stack)
+5. [Deployment — Docker with systemd (recommended)](#deployment--docker-with-systemd-recommended)
+6. [Deployment — bare metal](#deployment--bare-metal)
+7. [Configuration reference](#configuration-reference)
+8. [Putting it behind TLS with nginx](#putting-it-behind-tls-with-nginx)
+9. [API reference](#api-reference)
+10. [Client usage examples](#client-usage-examples)
+11. [Verifying a signature](#verifying-a-signature)
+12. [Troubleshooting](#troubleshooting)
+13. [Security notes](#security-notes)
 
 ---
 
@@ -147,6 +148,108 @@ You will need these for the `.env` file:
 | `TENANT_ID` | Azure Portal → Azure Active Directory → Overview → Tenant ID |
 | `CLIENT_ID` | Azure Portal → App Registrations → your app → Application (client) ID |
 | `CLIENT_SECRET` | Output from `az ad app credential reset` above |
+
+---
+
+## Deployment — Portainer stack
+
+Two ways to run this as a Portainer stack. **Option A** pulls a pre-built image and is the quickest. **Option B** points Portainer at this repository and lets it build the image itself.
+
+Either way, all configuration is supplied through Portainer's **Environment variables** panel — there is no `.env` file inside a Portainer stack.
+
+### Option A — Web editor with a pre-built image (recommended)
+
+The GitHub Actions workflow in `.github/workflows/docker-publish.yml` publishes a multi-architecture image (`linux/amd64` + `linux/arm64`) to GHCR on every push. Portainer just pulls it.
+
+**1. Make sure the image exists.** Push this branch and let the workflow run, or trigger it manually from the Actions tab. It publishes to:
+
+```
+ghcr.io/crisssom/signerserver:latest
+```
+
+**2. Give Portainer access to the image.** This repository is **private**, so the published GHCR package is private too. Pick one:
+
+- *Make the package public* — GitHub → your profile → Packages → `signerserver` → Package settings → Change visibility → Public. The image contains no secrets, only the application code. Nothing else is required in Portainer.
+- *Keep it private* — in Portainer go to **Registries → Add registry → Custom registry**, URL `ghcr.io`, username your GitHub username, password a [personal access token](https://github.com/settings/tokens) with the `read:packages` scope.
+
+**3. Create the stack.** Portainer → **Stacks** → **Add stack** → name it `signer-server` → **Web editor**, and paste the contents of [`portainer-stack.yml`](portainer-stack.yml).
+
+**4. Fill in the environment variables.** Scroll to **Environment variables** → **Add an environment variable** (or *Advanced mode* to paste them all at once):
+
+| Name | Required | Example |
+|---|---|---|
+| `KEY_VAULT_URL` | **Yes** | `https://my-vault.vault.azure.net/` |
+| `CERTIFICATE_NAME` | **Yes** | `my-code-signing-cert` |
+| `TENANT_ID` | Recommended | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `CLIENT_ID` | Recommended | `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` |
+| `CLIENT_SECRET` | Recommended | *(service principal secret)* |
+| `API_KEY` | Recommended | *(output of `openssl rand -hex 32`)* |
+| `HOST_PORT` | No | `8080` |
+
+Omit `TENANT_ID` / `CLIENT_ID` / `CLIENT_SECRET` only if the host has an Azure managed identity. Every remaining variable has a working default — see [`.env.example`](.env.example) for the full list.
+
+`KEY_VAULT_URL` and `CERTIFICATE_NAME` are mandatory by design: leave either blank and the stack refuses to deploy with an explicit message, rather than starting a container that fails on the first signing request.
+
+**5. Deploy the stack**, then confirm it came up:
+
+```bash
+curl http://<portainer-host>:8080/health
+```
+
+The container also carries a `HEALTHCHECK`, so Portainer's container list shows a green **healthy** badge about 20 seconds after start. If it sits on **starting** or flips to **unhealthy**, open the container's **Logs** tab in Portainer.
+
+### Option B — Build from this Git repository
+
+Use this if you would rather not publish an image at all.
+
+Portainer → **Stacks** → **Add stack** → **Repository**, then:
+
+| Field | Value |
+|---|---|
+| Repository URL | `https://github.com/CrissSom/SignerServer` |
+| Repository reference | `refs/heads/claude/docker-portainer-stack-z56fi6` |
+| Compose path | `docker-compose.yml` |
+| Authentication | **On** — username + a PAT with `repo` scope (the repository is private) |
+
+Add the same environment variables as Option A and deploy. Portainer clones the repo and runs `docker compose up --build`, so the first deploy takes a few minutes while the image builds.
+
+Enable **GitOps updates** (Portainer BE) or use the webhook to re-deploy automatically when the branch moves.
+
+### Updating
+
+- **Option A:** Stacks → `signer-server` → **Pull and redeploy** (tick *Re-pull image*).
+- **Option B:** Stacks → `signer-server` → **Update the stack**, tick *Re-pull image and redeploy*, which rebuilds from the latest commit.
+
+To pin a known-good build instead of tracking `latest`, set `IMAGE_TAG` to a released version (for example `v1.0.0`) or a short commit SHA — the workflow publishes both.
+
+### What the stack creates
+
+| Resource | Purpose |
+|---|---|
+| Container `portainer` | The API, listening on `8080` inside the container |
+| Named volume `signer-tmp` | Scratch space for uploads and signing, mounted at `/data/tmp` |
+| `tmpfs` at `/tmp` | Small RAM-backed scratch area used by the JVM |
+
+The volume holds only in-flight temporary files, never signing material — the private key stays in Azure Key Vault throughout. It exists so that large uploads do not inflate the container's writable layer, and it is safe to delete when the stack is down.
+
+> **Name collision warning.** The container is named `portainer` by default. Portainer's own documented install also names its container `portainer`, and Docker allows only one container per name, so on a host running Portainer the stack deploy fails outright:
+>
+> ```
+> Error response from daemon: Conflict. The container name "/portainer" is
+> already in use by container "fe196d4738...". You have to remove (or rename)
+> that container to be able to reuse that name.
+> ```
+>
+> If you hit this, set `CONTAINER_NAME` to something else (`signer-server` is the obvious choice) in the stack's environment variables. Nothing else needs to change — the name is cosmetic and no other setting refers to it.
+
+### Hardening notes
+
+The stack already runs the container as a non-root user (`signer`, uid 1000), sets `no-new-privileges`, caps memory at `MEMORY_LIMIT` (1 GB default), and rotates logs at 3 × 10 MB so a busy signer cannot fill the host disk.
+
+Two things are worth doing yourself:
+
+- **Do not expose port 8080 to the internet.** It is plain HTTP. Terminate TLS in front of it — see [Putting it behind TLS with nginx](#putting-it-behind-tls-with-nginx). When the proxy runs on the same host, set `BIND_ADDRESS=127.0.0.1` so the container port is not reachable from the LAN at all.
+- **Always set `API_KEY`.** Leaving it empty disables authentication, which means anyone who can reach the port can sign binaries with your certificate.
 
 ---
 
@@ -328,7 +431,11 @@ sudo systemctl start signer
 
 ## Configuration reference
 
-All settings are read from environment variables or a `.env` file in the working directory.
+All settings are read from environment variables, or from a `.env` file in the working directory. In Portainer, set them in the stack's **Environment variables** panel.
+
+### Application settings
+
+Read by the server itself.
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
@@ -339,11 +446,29 @@ All settings are read from environment variables or a `.env` file in the working
 | `CLIENT_SECRET` | No | — | App/service principal secret |
 | `API_KEY` | No | *(disabled)* | If set, clients must send `X-API-Key: <value>` |
 | `DEFAULT_TIMESTAMP_URL` | No | DigiCert | RFC-3161 timestamp server URL |
-| `DEFAULT_TIMESTAMP_DIGEST` | No | `sha256` | Digest for timestamp: `sha256`, `sha384`, `sha512` |
+| `DEFAULT_DIGEST` | No | `SHA-256` | Signature digest: `SHA-256`, `SHA-384`, `SHA-512` |
 | `MAX_UPLOAD_BYTES` | No | `209715200` | Maximum upload size (200 MB) |
-| `AZURE_SIGN_TOOL_PATH` | No | `AzureSignTool` | Full path to binary if not on `PATH` |
+| `JSIGN_PATH` | No | `/opt/jsign.jar` | Path to the jsign JAR |
+| `JSIGN_VERSION` | No | *(baked into image)* | Version reported on `/health`; jsign has no `--version` flag |
+| `TMPDIR` | No | `/data/tmp` | Scratch directory for uploads and signing |
 
-**Authentication priority:** If `CLIENT_SECRET` is set, client credentials are used. Otherwise AzureSignTool falls back to managed identity, then environment credentials, then Azure CLI — in that order.
+**Authentication priority:** if `TENANT_ID`, `CLIENT_ID` and `CLIENT_SECRET` are all set, client credentials are used. Otherwise `DefaultAzureCredential` falls back to managed identity, then environment credentials, then Azure CLI — in that order.
+
+### Container settings
+
+Read by the entrypoint and by Compose. Only meaningful when running in Docker.
+
+| Variable | Default | Description |
+|---|---|---|
+| `IMAGE_NAME` | `ghcr.io/crisssom/signerserver` | Image to run |
+| `IMAGE_TAG` | `latest` | Image tag — pin a release to avoid surprise updates |
+| `CONTAINER_NAME` | `signer-server` | Name of the running container |
+| `HOST_PORT` | `8080` | Host port published to clients |
+| `BIND_ADDRESS` | `0.0.0.0` | Interface to bind; `127.0.0.1` when proxied locally |
+| `MEMORY_LIMIT` | `1g` | Container memory ceiling |
+| `WEB_CONCURRENCY` | `1` | Uvicorn worker processes |
+| `LOG_LEVEL` | `info` | `critical`, `error`, `warning`, `info`, `debug`, `trace` |
+| `PORT` | `8080` | Port *inside* the container; rarely needs changing |
 
 ---
 
@@ -404,7 +529,7 @@ OpenAPI schema: `http://localhost:8080/openapi.json`
 
 ### `GET /health`
 
-No authentication required. Returns server status and AzureSignTool version.
+No authentication required. Returns server status and the detected jsign version. Used by the container's `HEALTHCHECK`, so it is also what drives Portainer's health badge.
 
 **Response**
 ```json
@@ -412,11 +537,11 @@ No authentication required. Returns server status and AzureSignTool version.
   "status": "ok",
   "key_vault_url": "https://my-vault.vault.azure.net/",
   "certificate_name": "my-cert",
-  "azure_sign_tool_version": "5.0.0"
+  "azure_sign_tool_version": "jsign 6.0"
 }
 ```
 
-If `azure_sign_tool_version` is `null`, AzureSignTool is not on PATH and signing will fail.
+The `azure_sign_tool_version` field is a legacy name — it now reports jsign. If it is `null`, jsign or Java is missing from the image and signing will fail.
 
 ---
 
@@ -584,7 +709,7 @@ Write-Host "Signed file saved to $outPath"
 | `Could not establish trust relationship` / `SSL` | Self-signed or untrusted TLS cert | Add `-SkipCertificateCheck` for testing, or install a real cert |
 | `The remote name could not be resolved` | DNS failure | Use the IP address instead of hostname |
 | `401 Unauthorized` | Wrong API key | Check `$ApiKey` matches `API_KEY` in server `.env` |
-| `500 Internal Server Error` | AzureSignTool / Key Vault error | Check server logs: `docker compose logs -f` |
+| `500 Internal Server Error` | jsign / Key Vault error | Check server logs: `docker compose logs -f`, or the container's Logs tab in Portainer |
 
 ### GitHub Actions
 
@@ -626,10 +751,10 @@ osslsigncode verify -in MyApp-signed.exe
 
 ### `azure_sign_tool_version` is null in /health
 
-AzureSignTool is not found on `PATH`.
+jsign or the Java runtime is missing. The field name predates the switch from AzureSignTool to jsign; the value now reports jsign.
 
-- **Docker:** Rebuild the image — `sudo docker compose build --no-cache`
-- **Bare metal:** Re-run `scripts/install_azuresigntool.sh` and ensure `~/.dotnet/tools` is in `PATH`
+- **Docker / Portainer:** the image bundles both, so this means the image is stale or was built from an older commit. Re-pull it (Portainer → Stacks → *Pull and redeploy*) or rebuild with `docker compose build --no-cache`.
+- **Bare metal:** install a JRE and place the jsign JAR where `JSIGN_PATH` points (default `/opt/jsign.jar`).
 
 ### `Signing failed: ... Unauthorized`
 

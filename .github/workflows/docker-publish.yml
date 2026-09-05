@@ -1,0 +1,129 @@
+name: Build and publish container image
+
+# Publishes to GHCR so Portainer can pull a ready-made image instead of
+# building from source. See portainer-stack.yml.
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+    tags:
+      - 'v*.*.*'
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # GHCR rejects uppercase image names; this repo's owner has capitals.
+      - name: Compute lowercase image name
+        id: image
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Skipped for pull requests: they build only, they never push.
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive tags and labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Runs on every build, not just PRs: this is what proves the image
+      # Portainer pulls actually boots, and that jsign and Java are present.
+      # Reuses the cache above, so it costs a load rather than a rebuild.
+      - name: Smoke-test the image
+        run: |
+          set -euo pipefail
+          docker buildx build --load --platform linux/amd64 \
+            --cache-from type=gha -t signer:ci .
+
+          docker run -d --name signer-ci --init \
+            -e KEY_VAULT_URL=https://example.vault.azure.net/ \
+            -e CERTIFICATE_NAME=ci-cert \
+            -e API_KEY=ci-secret \
+            -p 8080:8080 signer:ci
+
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+
+          health=$(curl -fsS http://127.0.0.1:8080/health) || {
+            echo "::error::/health never became reachable"; docker logs signer-ci; exit 1; }
+          echo "$health"
+
+          # A null version means jsign or the JRE is missing from the image.
+          python3 - "$health" <<'EOF'
+          import json, re, sys
+          h = json.loads(sys.argv[1])
+          v = h.get("azure_sign_tool_version")
+          if not v:
+              print("::error::jsign/Java missing from image (version reported null)")
+              sys.exit(1)
+          # Must be a real version, not jsign's usage banner leaking through.
+          if not re.fullmatch(r"jsign \d+(\.\d+)*", v):
+              print(f"::error::unexpected jsign version string: {v!r}")
+              sys.exit(1)
+          print("jsign detected:", v)
+          EOF
+
+          # The API key must actually be enforced.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                   http://127.0.0.1:8080/sign -F 'file=@README.md')
+          [ "$code" = "401" ] || { echo "::error::unauthenticated /sign returned $code, expected 401"; exit 1; }
+          echo "auth enforced (401 without key)"
+
+          # osslsigncode strips pre-existing signatures; it must be installed.
+          docker exec signer-ci sh -c 'command -v osslsigncode' >/dev/null \
+            || { echo "::error::osslsigncode missing from image"; exit 1; }
+          echo "osslsigncode present"
+
+          docker rm -f signer-ci >/dev/null
