@@ -439,6 +439,7 @@ Read by the server itself.
 | `DEFAULT_DIGEST` | No | `SHA-256` | Signature digest: `SHA-256`, `SHA-384`, `SHA-512` |
 | `MAX_UPLOAD_BYTES` | No | `209715200` | Maximum upload size (200 MB) |
 | `JSIGN_PATH` | No | `/opt/jsign.jar` | Path to the jsign JAR |
+| `JSIGN_VERSION` | No | *(baked into image)* | Version reported on `/health`; jsign has no `--version` flag |
 | `TMPDIR` | No | `/data/tmp` | Scratch directory for uploads and signing |
 
 **Authentication priority:** if `TENANT_ID`, `CLIENT_ID` and `CLIENT_SECRET` are all set, client credentials are used. Otherwise `DefaultAzureCredential` falls back to managed identity, then environment credentials, then Azure CLI — in that order.

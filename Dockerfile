@@ -1,9 +1,13 @@
+# Global, so both stages can see it: the builder downloads this version and the
+# runtime reports it on /health. jsign itself has no --version flag.
+ARG JSIGN_VERSION=6.0
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 — builder: python deps + jsign download (kept out of the final image)
 # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim-bookworm AS builder
 
-ARG JSIGN_VERSION=6.0
+ARG JSIGN_VERSION
 ARG JSIGN_SHA256=05ca18d4ab7b8c2183289b5378d32860f0ea0f3bdab1f1b8cae5894fb225fa8a
 
 RUN apt-get update \
@@ -26,6 +30,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # ─────────────────────────────────────────────────────────────────────────────
 FROM python:3.12-slim-bookworm AS runtime
 
+ARG JSIGN_VERSION
+
 LABEL org.opencontainers.image.title="Windows Binary Signing Server" \
       org.opencontainers.image.description="Authenticode signing for Windows PE binaries via Azure Key Vault" \
       org.opencontainers.image.source="https://github.com/CrissSom/SignerServer" \
@@ -44,6 +50,7 @@ RUN apt-get update \
 # volume is mounted means a named volume inherits this ownership.
 ENV TMPDIR=/data/tmp \
     JSIGN_PATH=/opt/jsign.jar \
+    JSIGN_VERSION=${JSIGN_VERSION} \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/venv/bin:${PATH}"

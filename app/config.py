@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     # Path to jsign JAR
     jsign_path: str = "/opt/jsign.jar"
 
+    # jsign has no --version flag, so the image passes its version in here.
+    jsign_version: Optional[str] = None
+
     # Maximum upload size in bytes (default 200 MB)
     max_upload_bytes: int = 200 * 1024 * 1024
 

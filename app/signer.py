@@ -43,7 +43,14 @@ async def _get_token_async() -> str:
 
 
 async def get_tool_version() -> str | None:
-    """Return jsign version string, or None if java/jar not found."""
+    """
+    Return a jsign version string, or None if java or the JAR is missing.
+
+    jsign exposes no --version flag and prints no version in its help output,
+    so the JAR is invoked only to prove that it and a JRE actually work; the
+    version itself comes from JSIGN_VERSION, which the image bakes in at build
+    time. A None here is what makes /health report the tool as unavailable.
+    """
     if not os.path.exists(settings.jsign_path):
         return None
     try:
@@ -53,11 +60,14 @@ async def get_tool_version() -> str | None:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
-        output = stdout.decode() + stderr.decode()
-        first_line = output.splitlines()[0] if output.splitlines() else ""
-        return first_line.strip() or "jsign (available)"
     except FileNotFoundError:
         return None
+
+    output = stdout.decode() + stderr.decode()
+    if "jsign" not in output.lower():
+        return None
+
+    return f"jsign {settings.jsign_version}" if settings.jsign_version else "jsign (available)"
 
 
 async def sign_binary(

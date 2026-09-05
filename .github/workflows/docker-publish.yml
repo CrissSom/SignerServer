@@ -102,12 +102,17 @@ jobs:
 
           # A null version means jsign or the JRE is missing from the image.
           python3 - "$health" <<'EOF'
-          import json, sys
+          import json, re, sys
           h = json.loads(sys.argv[1])
-          if not h.get("azure_sign_tool_version"):
+          v = h.get("azure_sign_tool_version")
+          if not v:
               print("::error::jsign/Java missing from image (version reported null)")
               sys.exit(1)
-          print("jsign detected:", h["azure_sign_tool_version"])
+          # Must be a real version, not jsign's usage banner leaking through.
+          if not re.fullmatch(r"jsign \d+(\.\d+)*", v):
+              print(f"::error::unexpected jsign version string: {v!r}")
+              sys.exit(1)
+          print("jsign detected:", v)
           EOF
 
           # The API key must actually be enforced.
