@@ -153,6 +153,20 @@ You will need these for the `.env` file:
 
 ## Deployment — Portainer stack
 
+All deployment files live in [`docker_portainer/`](docker_portainer/):
+
+| File | Purpose |
+|---|---|
+| `Dockerfile` | The image. Built with the **repo root** as context, since it needs `app/` and `requirements.txt` |
+| `docker-compose.yml` | Builds from source — local dev and Portainer Git-repository stacks |
+| `portainer-stack.yml` | Pulls a pre-built image — Portainer web editor |
+| `docker-entrypoint.sh` | Launches uvicorn with settings taken from the environment |
+| `.env.example` | Every supported variable, with defaults |
+| `signer.service` | systemd unit for the Docker-with-systemd deployment |
+
+`.dockerignore` stays at the repo root because that is the build context; Docker reads it from there, not from beside the Dockerfile.
+
+
 Two ways to run this as a Portainer stack. **Option A** pulls a pre-built image and is the quickest. **Option B** points Portainer at this repository and lets it build the image itself.
 
 Either way, all configuration is supplied through Portainer's **Environment variables** panel — there is no `.env` file inside a Portainer stack.
@@ -172,7 +186,7 @@ ghcr.io/crisssom/signerserver:latest
 - *Make the package public* — GitHub → your profile → Packages → `signerserver` → Package settings → Change visibility → Public. The image contains no secrets, only the application code. Nothing else is required in Portainer.
 - *Keep it private* — in Portainer go to **Registries → Add registry → Custom registry**, URL `ghcr.io`, username your GitHub username, password a [personal access token](https://github.com/settings/tokens) with the `read:packages` scope.
 
-**3. Create the stack.** Portainer → **Stacks** → **Add stack** → name it `signer-server` → **Web editor**, and paste the contents of [`portainer-stack.yml`](portainer-stack.yml).
+**3. Create the stack.** Portainer → **Stacks** → **Add stack** → name it `signer-server` → **Web editor**, and paste the contents of [`docker_portainer/portainer-stack.yml`](docker_portainer/portainer-stack.yml).
 
 **4. Fill in the environment variables.** Scroll to **Environment variables** → **Add an environment variable** (or *Advanced mode* to paste them all at once):
 
@@ -186,7 +200,7 @@ ghcr.io/crisssom/signerserver:latest
 | `API_KEY` | Recommended | *(output of `openssl rand -hex 32`)* |
 | `HOST_PORT` | No | `8080` |
 
-Omit `TENANT_ID` / `CLIENT_ID` / `CLIENT_SECRET` only if the host has an Azure managed identity. Every remaining variable has a working default — see [`.env.example`](.env.example) for the full list.
+Omit `TENANT_ID` / `CLIENT_ID` / `CLIENT_SECRET` only if the host has an Azure managed identity. Every remaining variable has a working default — see [`docker_portainer/.env.example`](docker_portainer/.env.example) for the full list.
 
 `KEY_VAULT_URL` and `CERTIFICATE_NAME` are mandatory by design: leave either blank and the stack refuses to deploy with an explicit message, rather than starting a container that fails on the first signing request.
 
@@ -208,7 +222,7 @@ Portainer → **Stacks** → **Add stack** → **Repository**, then:
 |---|---|
 | Repository URL | `https://github.com/CrissSom/SignerServer` |
 | Repository reference | `refs/heads/claude/docker-portainer-stack-z56fi6` |
-| Compose path | `docker-compose.yml` |
+| Compose path | `docker_portainer/docker-compose.yml` |
 | Authentication | **On** — username + a PAT with `repo` scope (the repository is private) |
 
 Add the same environment variables as Option A and deploy. Portainer clones the repo and runs `docker compose up --build`, so the first deploy takes a few minutes while the image builds.
@@ -226,21 +240,13 @@ To pin a known-good build instead of tracking `latest`, set `IMAGE_TAG` to a rel
 
 | Resource | Purpose |
 |---|---|
-| Container `portainer` | The API, listening on `8080` inside the container |
+| Container `signer-server` | The API, listening on `8080` inside the container |
 | Named volume `signer-tmp` | Scratch space for uploads and signing, mounted at `/data/tmp` |
 | `tmpfs` at `/tmp` | Small RAM-backed scratch area used by the JVM |
 
 The volume holds only in-flight temporary files, never signing material — the private key stays in Azure Key Vault throughout. It exists so that large uploads do not inflate the container's writable layer, and it is safe to delete when the stack is down.
 
-> **Name collision warning.** The container is named `portainer` by default. Portainer's own documented install also names its container `portainer`, and Docker allows only one container per name, so on a host running Portainer the stack deploy fails outright:
->
-> ```
-> Error response from daemon: Conflict. The container name "/portainer" is
-> already in use by container "fe196d4738...". You have to remove (or rename)
-> that container to be able to reuse that name.
-> ```
->
-> If you hit this, set `CONTAINER_NAME` to something else (`signer-server` is the obvious choice) in the stack's environment variables. Nothing else needs to change — the name is cosmetic and no other setting refers to it.
+> Do not set `CONTAINER_NAME` to `portainer`. That is the name Portainer's own container uses, and Docker allows only one container per name, so the stack would fail to deploy with `Conflict. The container name "/portainer" is already in use`.
 
 ### Hardening notes
 
@@ -283,7 +289,7 @@ sudo systemctl start docker
 ```bash
 sudo mkdir -p /opt/signer-server
 sudo cp -r . /opt/signer-server/
-cd /opt/signer-server
+cd /opt/signer-server/docker_portainer
 ```
 
 ### Step 3 — Configure the environment
@@ -307,13 +313,13 @@ API_KEY=replace-with-a-long-random-string
 Protect the file so only root can read it:
 
 ```bash
-sudo chmod 600 /opt/signer-server/.env
+sudo chmod 600 /opt/signer-server/docker_portainer/.env
 ```
 
 ### Step 4 — Build the Docker image
 
 ```bash
-cd /opt/signer-server
+cd /opt/signer-server/docker_portainer
 sudo docker compose build
 ```
 
@@ -322,7 +328,7 @@ This takes a few minutes the first time (downloads .NET SDK and Python layers).
 ### Step 5 — Install and enable the systemd service
 
 ```bash
-sudo cp /opt/signer-server/signer.service /etc/systemd/system/
+sudo cp /opt/signer-server/docker_portainer/signer.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable signer
 sudo systemctl start signer
@@ -335,7 +341,7 @@ sudo systemctl start signer
 sudo systemctl status signer
 
 # Check the container is up
-sudo docker compose -f /opt/signer-server/docker-compose.yml ps
+sudo docker compose -f /opt/signer-server/docker_portainer/docker-compose.yml ps
 
 # Hit the health endpoint
 curl http://localhost:8080/health
@@ -364,7 +370,7 @@ sudo systemctl restart signer
 sudo journalctl -u signer -f
 
 # View container logs
-sudo docker compose -f /opt/signer-server/docker-compose.yml logs -f
+sudo docker compose -f /opt/signer-server/docker_portainer/docker-compose.yml logs -f
 ```
 
 ---
@@ -391,7 +397,7 @@ pip install -r /opt/signer-server/requirements.txt
 ### Step 2 — Configure
 
 ```bash
-cp /opt/signer-server/.env.example /opt/signer-server/.env
+cp /opt/signer-server/docker_portainer/.env.example /opt/signer-server/.env
 nano /opt/signer-server/.env
 chmod 600 /opt/signer-server/.env
 ```

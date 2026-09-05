@@ -64,7 +64,7 @@ WORKDIR /app
 COPY --from=builder /opt/jsign.jar /opt/jsign.jar
 COPY --from=builder --chown=signer:signer /app/venv /app/venv
 COPY --chown=signer:signer app/ ./app/
-COPY --chown=signer:signer docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+COPY --chown=signer:signer docker_portainer/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 

@@ -68,7 +68,9 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
+          # Context stays the repo root; only the Dockerfile moved.
           context: .
+          file: docker_portainer/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -83,7 +85,7 @@ jobs:
         run: |
           set -euo pipefail
           docker buildx build --load --platform linux/amd64 \
-            --cache-from type=gha -t signer:ci .
+            --cache-from type=gha -f docker_portainer/Dockerfile -t signer:ci .
 
           docker run -d --name signer-ci --init \
             -e KEY_VAULT_URL=https://example.vault.azure.net/ \
