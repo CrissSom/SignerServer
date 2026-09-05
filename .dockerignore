@@ -1,10 +1,11 @@
-# Secrets — must never reach the build context
-.env
-.env.*
-!.env.example
-*.pem
-*.pfx
-*.p12
+# Secrets — must never reach the build context.
+# Depth-independent: the real .env lives in docker_portainer/, not at the root,
+# and a bare `.env` pattern would not match it.
+**/.env
+**/.env.*
+**/*.pem
+**/*.pfx
+**/*.p12
 
 # VCS / CI
 .git
@@ -14,26 +15,28 @@
 # Docs and host-only deployment helpers
 README.md
 LICENSE
-signer.service
 scripts/
 
-# Compose files (not needed inside the image)
-docker-compose*.yml
-portainer-stack.yml
+# Deployment files. The Dockerfile lives in docker_portainer/ but the build
+# context is the repo root, so these are excluded by their real paths. The
+# entrypoint is re-included: the Dockerfile COPYs it into the image.
+docker_portainer/*
+!docker_portainer/docker-entrypoint.sh
 
-# Python build noise
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-dist/
-build/
+# Python build noise. Depth-independent: app/__pycache__ from a developer's
+# machine would otherwise be baked into the image by `COPY app/`.
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.venv/
+**/venv/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/dist/
+**/build/
 
 # Test artefacts
-*.exe
-*.dll
-*.msi
+**/*.exe
+**/*.dll
+**/*.msi

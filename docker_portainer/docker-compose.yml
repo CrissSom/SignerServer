@@ -1,22 +1,23 @@
-# Portainer stack — pulls a pre-built image, no build context required.
+# Builds the image from this repository.
 #
-# Deploy: Portainer → Stacks → Add stack → Web editor → paste this file,
-# then fill in the variables below under "Environment variables".
+# Use this file for local development and for Portainer stacks deployed from a
+# Git repository (Portainer builds the image itself in that mode).
+# To deploy from Portainer's web editor instead — where there is no build
+# context — use portainer-stack.yml, which pulls a pre-built image.
 #
-# Required:  KEY_VAULT_URL, CERTIFICATE_NAME
-# Strongly recommended:  API_KEY, and TENANT_ID / CLIENT_ID / CLIENT_SECRET
-#                        (omit the three Azure credentials to use a managed identity)
-#
-# Everything else has a working default. Full reference: .env.example
+# Values come from a .env file sitting next to this file (locally) or from the
+# stack's environment-variable panel (in Portainer). See .env.example.
 
 services:
   signer:
+    build:
+      # Context is the repo root, one level up: the image needs app/ and
+      # requirements.txt, and Docker cannot COPY from outside the context.
+      # .dockerignore therefore also lives at the repo root, not here.
+      context: ..
+      dockerfile: docker_portainer/Dockerfile
     image: ${IMAGE_NAME:-ghcr.io/crisssom/signerserver}:${IMAGE_TAG:-latest}
-      # NOTE: Portainer's own container is named `portainer` in its documented
-      # install. If this host runs Portainer itself, Docker will refuse to
-      # create a second container with that name and the stack deploy fails
-      # with a name conflict — set CONTAINER_NAME to something else there.
-    container_name: ${CONTAINER_NAME:-portainer}
+    container_name: ${CONTAINER_NAME:-signer-server}
     restart: unless-stopped
 
     ports:
@@ -27,15 +28,17 @@ services:
 
     environment:
       # ── Azure Key Vault (required) ──────────────────────────────────────────
-      KEY_VAULT_URL: ${KEY_VAULT_URL:?set KEY_VAULT_URL in the stack environment variables}
-      CERTIFICATE_NAME: ${CERTIFICATE_NAME:?set CERTIFICATE_NAME in the stack environment variables}
+      KEY_VAULT_URL: ${KEY_VAULT_URL:?KEY_VAULT_URL is required — set it in .env or the Portainer stack env vars}
+      CERTIFICATE_NAME: ${CERTIFICATE_NAME:?CERTIFICATE_NAME is required — set it in .env or the Portainer stack env vars}
 
-      # ── Azure authentication (leave empty to use a managed identity) ────────
+      # ── Azure authentication ────────────────────────────────────────────────
+      # Service principal. Leave all three empty to fall back to a managed identity.
       TENANT_ID: ${TENANT_ID:-}
       CLIENT_ID: ${CLIENT_ID:-}
       CLIENT_SECRET: ${CLIENT_SECRET:-}
 
-      # ── API security — sent by clients as the X-API-Key header ──────────────
+      # ── API security ────────────────────────────────────────────────────────
+      # Clients must send this as the X-API-Key header. Empty disables auth.
       API_KEY: ${API_KEY:-}
 
       # ── Signing defaults ────────────────────────────────────────────────────
@@ -48,9 +51,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
     volumes:
+      # Upload/signing scratch space. Kept off the container's writable layer so
+      # large binaries do not inflate it. Contents are disposable.
       - signer-tmp:/data/tmp
 
     tmpfs:
+      # Java scribbles hsperfdata here; small and RAM-backed on purpose.
       - /tmp:size=64m
 
     security_opt:
