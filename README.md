@@ -226,11 +226,21 @@ To pin a known-good build instead of tracking `latest`, set `IMAGE_TAG` to a rel
 
 | Resource | Purpose |
 |---|---|
-| Container `signer-server` | The API, listening on `8080` inside the container |
+| Container `portainer` | The API, listening on `8080` inside the container |
 | Named volume `signer-tmp` | Scratch space for uploads and signing, mounted at `/data/tmp` |
 | `tmpfs` at `/tmp` | Small RAM-backed scratch area used by the JVM |
 
 The volume holds only in-flight temporary files, never signing material — the private key stays in Azure Key Vault throughout. It exists so that large uploads do not inflate the container's writable layer, and it is safe to delete when the stack is down.
+
+> **Name collision warning.** The container is named `portainer` by default. Portainer's own documented install also names its container `portainer`, and Docker allows only one container per name, so on a host running Portainer the stack deploy fails outright:
+>
+> ```
+> Error response from daemon: Conflict. The container name "/portainer" is
+> already in use by container "fe196d4738...". You have to remove (or rename)
+> that container to be able to reuse that name.
+> ```
+>
+> If you hit this, set `CONTAINER_NAME` to something else (`signer-server` is the obvious choice) in the stack's environment variables. Nothing else needs to change — the name is cosmetic and no other setting refers to it.
 
 ### Hardening notes
 
