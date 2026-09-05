@@ -1,0 +1,39 @@
+# Secrets — must never reach the build context
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.p12
+
+# VCS / CI
+.git
+.gitignore
+.github
+
+# Docs and host-only deployment helpers
+README.md
+LICENSE
+signer.service
+scripts/
+
+# Compose files (not needed inside the image)
+docker-compose*.yml
+portainer-stack.yml
+
+# Python build noise
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/
+
+# Test artefacts
+*.exe
+*.dll
+*.msi

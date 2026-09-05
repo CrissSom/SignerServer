@@ -1,18 +1,16 @@
-# Builds the image from this repository.
+# Portainer stack — pulls a pre-built image, no build context required.
 #
-# Use this file for local development and for Portainer stacks deployed from a
-# Git repository (Portainer builds the image itself in that mode).
-# To deploy from Portainer's web editor instead — where there is no build
-# context — use portainer-stack.yml, which pulls a pre-built image.
+# Deploy: Portainer → Stacks → Add stack → Web editor → paste this file,
+# then fill in the variables below under "Environment variables".
 #
-# Values come from a .env file sitting next to this file (locally) or from the
-# stack's environment-variable panel (in Portainer). See .env.example.
+# Required:  KEY_VAULT_URL, CERTIFICATE_NAME
+# Strongly recommended:  API_KEY, and TENANT_ID / CLIENT_ID / CLIENT_SECRET
+#                        (omit the three Azure credentials to use a managed identity)
+#
+# Everything else has a working default. Full reference: .env.example
 
 services:
   signer:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: ${IMAGE_NAME:-ghcr.io/crisssom/signerserver}:${IMAGE_TAG:-latest}
     container_name: ${CONTAINER_NAME:-signer-server}
     restart: unless-stopped
@@ -25,17 +23,15 @@ services:
 
     environment:
       # ── Azure Key Vault (required) ──────────────────────────────────────────
-      KEY_VAULT_URL: ${KEY_VAULT_URL:?KEY_VAULT_URL is required — set it in .env or the Portainer stack env vars}
-      CERTIFICATE_NAME: ${CERTIFICATE_NAME:?CERTIFICATE_NAME is required — set it in .env or the Portainer stack env vars}
+      KEY_VAULT_URL: ${KEY_VAULT_URL:?set KEY_VAULT_URL in the stack environment variables}
+      CERTIFICATE_NAME: ${CERTIFICATE_NAME:?set CERTIFICATE_NAME in the stack environment variables}
 
-      # ── Azure authentication ────────────────────────────────────────────────
-      # Service principal. Leave all three empty to fall back to a managed identity.
+      # ── Azure authentication (leave empty to use a managed identity) ────────
       TENANT_ID: ${TENANT_ID:-}
       CLIENT_ID: ${CLIENT_ID:-}
       CLIENT_SECRET: ${CLIENT_SECRET:-}
 
-      # ── API security ────────────────────────────────────────────────────────
-      # Clients must send this as the X-API-Key header. Empty disables auth.
+      # ── API security — sent by clients as the X-API-Key header ──────────────
       API_KEY: ${API_KEY:-}
 
       # ── Signing defaults ────────────────────────────────────────────────────
@@ -48,12 +44,9 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
     volumes:
-      # Upload/signing scratch space. Kept off the container's writable layer so
-      # large binaries do not inflate it. Contents are disposable.
       - signer-tmp:/data/tmp
 
     tmpfs:
-      # Java scribbles hsperfdata here; small and RAM-backed on purpose.
       - /tmp:size=64m
 
     security_opt:

@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
@@ -25,9 +25,14 @@ class Settings(BaseSettings):
     # Maximum upload size in bytes (default 200 MB)
     max_upload_bytes: int = 200 * 1024 * 1024
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    # extra="ignore" matters in containers: the runtime injects vars this model
+    # does not declare (PORT, WEB_CONCURRENCY, LOG_LEVEL, ...) and a stray key in
+    # a mounted .env would otherwise abort startup.
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 settings = Settings()
