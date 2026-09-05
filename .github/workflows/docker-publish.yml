@@ -76,19 +76,49 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Runs on every build, not just PRs: this is what proves the image
+      # Portainer pulls actually boots, and that jsign and Java are present.
+      # Reuses the cache above, so it costs a load rather than a rebuild.
       - name: Smoke-test the image
-        # Only meaningful for a single-arch load; runs on the runner's amd64.
-        if: github.event_name == 'pull_request'
         run: |
-          docker buildx build --load --platform linux/amd64 -t signer:ci .
-          docker run -d --name signer-ci \
+          set -euo pipefail
+          docker buildx build --load --platform linux/amd64 \
+            --cache-from type=gha -t signer:ci .
+
+          docker run -d --name signer-ci --init \
             -e KEY_VAULT_URL=https://example.vault.azure.net/ \
             -e CERTIFICATE_NAME=ci-cert \
+            -e API_KEY=ci-secret \
             -p 8080:8080 signer:ci
-          for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
-              echo "health OK"; curl -sS http://127.0.0.1:8080/health; exit 0
-            fi
+
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1 && break
             sleep 2
           done
-          echo "health check never passed"; docker logs signer-ci; exit 1
+
+          health=$(curl -fsS http://127.0.0.1:8080/health) || {
+            echo "::error::/health never became reachable"; docker logs signer-ci; exit 1; }
+          echo "$health"
+
+          # A null version means jsign or the JRE is missing from the image.
+          python3 - "$health" <<'EOF'
+          import json, sys
+          h = json.loads(sys.argv[1])
+          if not h.get("azure_sign_tool_version"):
+              print("::error::jsign/Java missing from image (version reported null)")
+              sys.exit(1)
+          print("jsign detected:", h["azure_sign_tool_version"])
+          EOF
+
+          # The API key must actually be enforced.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+                   http://127.0.0.1:8080/sign -F 'file=@README.md')
+          [ "$code" = "401" ] || { echo "::error::unauthenticated /sign returned $code, expected 401"; exit 1; }
+          echo "auth enforced (401 without key)"
+
+          # osslsigncode strips pre-existing signatures; it must be installed.
+          docker exec signer-ci sh -c 'command -v osslsigncode' >/dev/null \
+            || { echo "::error::osslsigncode missing from image"; exit 1; }
+          echo "osslsigncode present"
+
+          docker rm -f signer-ci >/dev/null
